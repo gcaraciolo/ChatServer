@@ -1,0 +1,272 @@
+package br.com.chat.server;
+
+import java.io.IOException;
+import java.io.PrintStream;
+import java.net.ServerSocket;
+import java.net.Socket;
+import java.text.SimpleDateFormat;
+import java.util.ArrayList;
+import java.util.Date;
+import java.util.List;
+import java.util.Map;
+import java.util.Scanner;
+import java.util.TreeMap;
+
+import org.json.JSONException;
+import org.json.JSONObject;
+
+public class Server {
+	
+	private static Map<String, Connection> mapConnections = new TreeMap<String, Connection>();
+	
+	public static void main(String[] args) {
+		
+		ServerSocket servidor;
+		try {
+			servidor = new ServerSocket(12345);
+			
+			console("Iniciando servidor chat");
+			
+			new Thread(new Runnable() {
+				
+				@Override
+				public void run() {
+					
+					while(true){
+						
+						try {
+							
+							List<String> listRemove = new ArrayList<>();
+							
+							for (String login : mapConnections.keySet()) {
+								
+								Connection connection = mapConnections.get(login);
+								
+								long millis = new Date().getTime() - connection.getDthUltimoAcesso().getTime();
+										
+								if((millis / 1000l) > 15l){//15 segundos..
+									listRemove.add(login);
+									connection.getSocket().close();
+								}
+										
+							}
+							
+							synchronized (mapConnections) {
+								for (String login : listRemove) {
+									mapConnections.remove(login);
+								}
+							}
+							
+							for (String login : listRemove) {
+								broadcast("REQUEST_USER_QUIT", login, login + " esta offline.");
+							}
+							
+							Thread.sleep(15000);//15 segundos..
+							
+						} catch (Exception e) {
+							e.printStackTrace();
+						}
+						
+					}
+				}
+				
+			}).start();
+			
+			while(true){
+				
+				Socket socket = servidor.accept();
+				
+				new Thread(new Runnable() {
+					
+					@Override
+					public void run() {
+						
+						try {
+							
+							Scanner stream = new Scanner(socket.getInputStream());
+							
+							while(stream.hasNextLine()){
+								
+								String request = stream.nextLine();
+								
+								console(socket.getInetAddress().getHostAddress() + "(" +socket.getPort() +") - " + request);
+								
+								String response = doRequest(request);
+								
+								if(response != null && !response.isEmpty()){
+									console(response);
+									enviaMensagem(socket, response);
+								}
+							}
+							
+						} catch (Exception e) {
+							
+							String msg = null;
+							
+							if(e.getMessage() != null){
+								msg = e.getMessage();
+							} else {
+								msg = "ERRO NA REQUISICAO DE " + socket.getInetAddress().getHostAddress();
+							}
+							console(msg);
+						}
+						
+					}
+
+					private String doRequest(String args) throws JSONException, IOException {
+						
+						JSONObject request = new JSONObject(args);
+						
+						JSONObject response = new JSONObject();
+						
+						String cmd = request.getString("cmd");						
+						
+						if(cmd.equals("REQUEST_CONNECT")){
+							
+							String from = request.getString("from");
+							
+							if(mapConnections.containsKey(from)){
+								response.put("cmd", "RESPONSE_CONNECT");
+								response.put("from", "Server");
+								response.put("data", "Login já em uso, escolha outro.");
+								
+							}  else {
+								
+								synchronized (mapConnections) {
+									mapConnections.put(from, new Connection(socket));
+								}
+								
+								response.put("cmd", "RESPONSE_CONNECT");
+								response.put("from", "Server");
+								response.put("data", "ok");
+								
+								broadcast("REQUEST_USER_JOIN", from, from + " esta online.");
+							}
+							
+						} else if(cmd.equals("REQUEST_LIST")){
+							
+							response.put("cmd", "RESPONSE_LIST");
+							response.put("from", "Server");
+							
+							String from = request.getString("from");
+							
+							String data = new String();
+							
+							for (String login : mapConnections.keySet()) {
+								
+								if(!login.equals(from)){
+									data += login + "\n";
+								}
+							}
+							
+							if(data.isEmpty()){
+								data = "(lista vazia)";
+							} else {
+								data = data.substring(0, data.length() -1);
+							}
+							
+							response.put("data", data);
+							
+						} else if(cmd.equals("REQUEST_SEND")){
+							
+							String to = request.getString("to");
+							
+							Connection connection = mapConnections.get(to);
+							
+							String data = request.getString("data");
+							
+							if(connection != null){
+								
+								String from = request.getString("from");
+								
+								JSONObject jsonTo = new JSONObject();
+								
+								jsonTo.put("cmd", "FORWARD_SEND");
+								jsonTo.put("from", from);
+								
+								jsonTo.put("data", data);
+								
+								enviaMensagem(connection.getSocket(), jsonTo.toString());
+								
+								console(jsonTo.toString());
+								
+							} else {
+								
+								response.put("cmd", "RESPONSE_SEND");
+								response.put("from", "Server");
+								response.put("data", "Não foi possivel enviar a mensagem, verifique o login e tente novamente.");
+								
+							}
+							
+						} else if(cmd.equals("REQUEST_DISCONNECT")){
+							
+							String from = request.getString("from");
+							
+							synchronized (mapConnections) {
+								mapConnections.remove(from);
+							}
+							
+							response.put("cmd", "RESPONSE_DISCONNECT");
+							response.put("from", "Server");
+							response.put("data", "bye");
+							
+							broadcast("REQUEST_USER_QUIT", from, from + " esta offline.");
+							
+						} else if(cmd.equals("REQUEST_PING")){
+							
+							String from = request.getString("from");
+							
+							Connection connection = mapConnections.get(from);
+							connection.setDthUltimoAcesso(new Date());
+							
+							response.put("cmd", "RESPONSE_PONG");
+							response.put("data", true);
+							response.put("from", "Server");
+							
+						}
+						
+						return response.length() == 0 ? null : response.toString();
+					}
+					
+				}).start();
+				
+			}
+			
+		} catch (IOException e) {
+			e.printStackTrace();
+		}
+		
+	}
+	
+	private static void broadcast(String cmd, String notLogin, String menssage) throws JSONException, IOException {
+		
+		JSONObject requestTo = new JSONObject();
+		
+		for (String login : mapConnections.keySet()) {
+			
+			if(!login.equals(notLogin)){
+				Connection connection = mapConnections.get(login);
+				
+				requestTo.put("cmd", cmd);
+				requestTo.put("from", "Server");
+				requestTo.put("data", menssage);
+				
+				enviaMensagem(connection.getSocket(), requestTo.toString());
+			}
+			
+		}
+	}
+	
+	private static void enviaMensagem(Socket socket, String menssage) throws IOException {
+		PrintStream ps = new PrintStream(socket.getOutputStream(), true);
+		ps.println(menssage);
+	}
+	
+	private static void console(String str){
+		
+		SimpleDateFormat sdf = new SimpleDateFormat("dd/MM/yyyy HH:mm:ss:mm");
+		
+		System.out.println("[" + sdf.format(new Date())+ "]: " + str);
+	}
+	
+}

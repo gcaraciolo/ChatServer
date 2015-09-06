@@ -1,0 +1,336 @@
+package br.com.chat.server;
+
+import java.io.IOException;
+import java.io.PrintStream;
+import java.net.ServerSocket;
+import java.net.Socket;
+import java.text.SimpleDateFormat;
+import java.util.ArrayList;
+import java.util.Date;
+import java.util.List;
+import java.util.Map;
+import java.util.Scanner;
+import java.util.TreeMap;
+
+import org.json.JSONException;
+import org.json.JSONObject;
+
+public class Server {
+	
+	private static Map<String, Socket> mapLoginSocket = new TreeMap<String, Socket>();
+	
+	public static void main(String[] args) {
+		
+		ServerSocket servidor;
+		try {
+			servidor = new ServerSocket(12345);
+			
+			console("Iniciando servidor chat");
+			
+//			new Thread(new Runnable() {
+//				
+//				@Override
+//				public void run() {
+//					
+//					while(true){
+//						
+//						try {
+//							
+//							console("Atualizando listagem de contatos...");
+//							
+//							JSONObject jsonRequest = new JSONObject();
+//							
+//							jsonRequest.put("cmd", "REQUEST_ACTIVE");
+//							jsonRequest.put("from", "Server");
+//							jsonRequest.put("data", "");
+//							
+//							List<String> listRemove = new ArrayList<>();
+//							
+//							for (String login : mapLoginSocket.keySet()) {
+//								
+//								Socket socketAtivo = mapLoginSocket.get(login);
+//								
+//								String response = enviaMensagemAtivo(socketAtivo, jsonRequest.toString());
+//								
+//								if(response == null){
+//									listRemove.add(login);
+//									socketAtivo.close();
+//								}
+//							}
+//							for (String login : listRemove) {
+//								mapLoginSocket.remove(login);
+//								console("Removendo " + login);
+//							}
+//						} catch (Exception e) {
+//							e.printStackTrace();
+//						} finally {
+//							try {
+//								Thread.sleep(30000l); //30 segundos...
+//							} catch (InterruptedException e) {
+//								e.printStackTrace();
+//							}
+//						}
+//						
+//					}
+//				}
+//				
+//			}).start();
+			
+			while(true){
+				
+				Socket socket = servidor.accept();
+				
+				new Thread(new Runnable() {
+					
+					@Override
+					public void run() {
+						
+						try {
+							
+							Scanner stream = new Scanner(socket.getInputStream());
+							
+							while(stream.hasNextLine()){
+								
+								String request = stream.nextLine();
+								
+								console(socket.getInetAddress().getHostAddress() + "(" +socket.getPort() +") - " + request);
+								
+								JSONObject jsonRequest = new JSONObject(request);
+								
+								String response = doRequest(jsonRequest);
+								
+								if(response != null && !response.isEmpty()){
+									console(response);
+									enviaMensagem(socket, response, false);
+								}
+							}
+							
+						} catch (Exception e) {
+							
+							String msg = null;
+							
+							if(e.getMessage() != null){
+								msg = e.getMessage();
+							} else {
+								msg = "ERRO NA REQUISICAO DE " + socket.getInetAddress().getHostAddress();
+							}
+							console(msg);
+						}
+						
+					}
+
+					private String doRequest(JSONObject json) throws JSONException, IOException {
+						
+						JSONObject jsonResponse = new JSONObject();
+						
+						String cmd = json.getString("cmd");						
+						
+						if(cmd.equals("REQUEST_CONNECT")){
+							
+							String from = json.getString("from");
+							
+							Socket socketAtivo = null;
+							
+							synchronized (mapLoginSocket) {
+								socketAtivo = mapLoginSocket.get(from);
+							}
+							
+							JSONObject jsonTo = new JSONObject();
+							
+							if(socketAtivo != null){
+								
+								jsonTo.put("cmd", "REQUEST_ACTIVE");
+								jsonTo.put("from", "Server");
+								jsonTo.put("data", "");
+								
+								String response = enviaMensagem(socketAtivo, jsonTo.toString(), true);
+								
+								if(response != null){
+									jsonResponse.put("cmd", "RESPONSE_CONNECT");
+									jsonResponse.put("from", "Server");
+									jsonResponse.put("data", "Login já em uso, escolha outro.");
+								} else {
+									socketAtivo.close();
+									
+									synchronized (mapLoginSocket) {
+										mapLoginSocket.put(from, socket);
+									}
+									
+									jsonResponse.put("cmd", "RESPONSE_CONNECT");
+									jsonResponse.put("from", "Server");
+									jsonResponse.put("data", "ok");
+								}
+								
+							} else {
+								
+								synchronized (mapLoginSocket) {
+									mapLoginSocket.put(from, socket);
+								}
+								
+								jsonResponse.put("cmd", "RESPONSE_CONNECT");
+								jsonResponse.put("from", "Server");
+								jsonResponse.put("data", "ok");
+								
+							}
+							
+							for (String login : mapLoginSocket.keySet()) {
+								
+								if(!login.equals(from)){
+									socketAtivo = mapLoginSocket.get(login);
+									
+									jsonTo.put("cmd", "REQUEST_USER_JOIN");
+									jsonTo.put("from", "Server");
+									jsonTo.put("data", from + " está online.");
+									
+									enviaMensagem(socketAtivo, jsonTo.toString(), false);
+								}
+								
+							}
+							
+						} else if(cmd.equals("REQUEST_LIST")){
+							
+							jsonResponse.put("cmd", "RESPONSE_LIST");
+							jsonResponse.put("from", "Server");
+							
+							String from = json.getString("from");
+							
+							String data = new String();
+							
+							for (String login : mapLoginSocket.keySet()) {
+								
+								if(!login.equals(from)){
+									data += login + "\n";
+								}
+							}
+							
+							if(data.isEmpty()){
+								data = "(sala vazia)";
+							} else {
+								data = data.substring(0, data.length() -1);
+							}
+							
+							jsonResponse.put("data", data);
+							
+						} else if(cmd.equals("REQUEST_SEND")){
+							
+							String to = json.getString("to");
+							
+							Socket socketTo = null;
+							
+							synchronized (mapLoginSocket) {
+								socketTo = mapLoginSocket.get(to);
+							}
+							
+							String data = json.getString("data");
+							
+							if(socketTo != null){
+								
+								String from = json.getString("from");
+								
+								JSONObject jsonTo = new JSONObject();
+								
+								jsonTo.put("cmd", "FORWARD_SEND");
+								jsonTo.put("from", from);
+								
+								jsonTo.put("data", data);
+								
+								enviaMensagem(socketTo, jsonTo.toString(), false);
+								
+								console(jsonTo.toString());
+								
+							} else {
+								
+								jsonResponse.put("cmd", "RESPONSE_SEND");
+								jsonResponse.put("from", "Server");
+								jsonResponse.put("data", "Não foi possivel enviar a mensagem, verifique o login e tente novamente.");
+								
+							}
+							
+						} else if(cmd.equals("REQUEST_DISCONNECT")){
+							
+							String from = json.getString("from");
+							
+							synchronized (mapLoginSocket) {
+								mapLoginSocket.remove(from);
+							}
+							
+							jsonResponse.put("cmd", "RESPONSE_DISCONNECT");
+							jsonResponse.put("from", "Server");
+							jsonResponse.put("data", "bye");
+							
+							JSONObject jsonTo = new JSONObject();
+							
+							for (String login : mapLoginSocket.keySet()) {
+								
+								if(!login.equals(from)){
+									Socket socketAtivo = mapLoginSocket.get(login);
+									
+									jsonTo.put("cmd", "REQUEST_USER_QUIT");
+									jsonTo.put("from", "Server");
+									jsonTo.put("data", from + " está offline.");
+									
+									enviaMensagem(socketAtivo, jsonTo.toString(), false);
+								}
+								
+							}
+							
+						} else if(cmd.equals("REQUEST_ACTIVE")){
+							
+							String login = json.getString("from");
+							
+							if(!mapLoginSocket.containsKey(login)){
+								synchronized (mapLoginSocket) {
+									mapLoginSocket.put(login, socket);
+								}
+							}
+							
+							jsonResponse.put("cmd", "RESPONSE_ACTIVE");
+							jsonResponse.put("data", true);
+							jsonResponse.put("from", "Server");
+							
+						}
+						
+						return jsonResponse.length() == 0 ? null : jsonResponse.toString();
+					}
+					
+				}).start();
+				
+			}
+			
+		} catch (IOException e) {
+			e.printStackTrace();
+		}
+	}
+	
+//	private static void enviaMensagem(Socket socket, String menssage) throws IOException {
+//		PrintStream ps = new PrintStream(socket.getOutputStream(), true);
+//		ps.println(menssage);
+//	}
+	
+	private static String enviaMensagem(Socket socket, String menssage, boolean containsReturn) throws IOException {
+		PrintStream ps = new PrintStream(socket.getOutputStream(), true);
+		ps.println(menssage);
+		
+		String request = null;
+		
+		if(containsReturn){
+			
+			Scanner scanner = new Scanner(socket.getInputStream());
+			
+			if(scanner.hasNext()){
+				request = scanner.nextLine();
+			}
+			
+		}
+		
+		return request;
+	}
+	
+	private static void console(String str){
+		
+		SimpleDateFormat sdf = new SimpleDateFormat("dd/MM/yyyy HH:mm:ss:mm");
+		
+		System.out.println("[" + sdf.format(new Date())+ "]: " + str);
+	}
+	
+}

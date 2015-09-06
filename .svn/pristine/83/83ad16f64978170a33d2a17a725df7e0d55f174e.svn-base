@@ -1,0 +1,156 @@
+package br.com.chat.server;
+
+import java.io.IOException;
+import java.io.PrintWriter;
+import java.io.Writer;
+import java.net.ServerSocket;
+import java.net.Socket;
+import java.text.SimpleDateFormat;
+import java.util.Date;
+import java.util.Map;
+import java.util.Scanner;
+import java.util.TreeMap;
+
+import org.json.JSONException;
+import org.json.JSONObject;
+
+public class Server {
+	
+	private static Map<String, Socket> mapLoginSocket = new TreeMap<String, Socket>();
+	
+	public static void main(String[] args) {
+		
+		ServerSocket servidor;
+		try {
+			servidor = new ServerSocket(12345);
+			
+			console("Iniciando servidor chat");
+			
+			while(true){
+				
+				Socket socketOrigem = servidor.accept();
+				
+				new Thread(new Runnable() {
+					
+					@Override
+					public void run() {
+						
+						try {
+							Scanner scanner = new Scanner(socketOrigem.getInputStream());
+							
+							String request = new String();
+							
+							while(scanner.hasNextLine()){
+								request += scanner.nextLine();
+							}
+							
+							console(socketOrigem.getInetAddress().getHostAddress() + " - " + request);
+							
+							JSONObject jsonRequest = new JSONObject(request);
+							
+							String response = doRequest(jsonRequest);
+							
+							String loginDestino = jsonRequest.getString("loginDestino");
+							
+							Socket socketDestino = null;
+							
+							synchronized (mapLoginSocket) {
+								socketDestino = mapLoginSocket.get(loginDestino);
+							}
+							
+							if(socketDestino != null){
+								
+								PrintWriter pw = new PrintWriter(socketDestino.getOutputStream(), true);
+								pw.write(response);
+								
+							} else {
+								throw new Exception("A mensagem não pode ser enviada para " + loginDestino);
+							}
+							
+						} catch (Exception e) {
+							
+							String msg = null;
+							
+							if(e.getMessage() != null){
+								msg = e.getMessage();
+							} else {
+								msg = "ERRO NA REQUISIÇÃO DE " + socketOrigem.getInetAddress().getHostAddress();
+							}
+							console(msg);
+						}
+						
+					}
+
+					private String doRequest(JSONObject json) throws JSONException, IOException {
+						
+						JSONObject jsonResponse = new JSONObject();
+						
+						String cmd = json.getString("cmd");
+						
+						
+						if(cmd.equals("REQUEST_CONNECT")){
+							
+							String login = json.getString("login");
+							
+							synchronized (mapLoginSocket) {
+								mapLoginSocket.put(login, socketOrigem);
+							}
+							
+							jsonResponse.put("cmd", "RESPONSE_CONNECT");
+							jsonResponse.put("data", true);
+
+						} else if(cmd.equals("REQUEST_DISCONNECT")){
+							
+							String login = json.getString("login");
+							
+							synchronized (mapLoginSocket) {
+								
+								Socket socket = mapLoginSocket.get(login);
+								
+								if(!socket.isClosed()){
+									//TODO - enviar a mensagem de bye pro usuario...
+									
+									socket.close();
+								}
+								
+								mapLoginSocket.remove(login);
+							}
+//							
+//							jsonResponse.put("cmd", "RESPONSE_CONNECT");
+//							jsonResponse.put("data", true);
+
+						} else if(cmd.equals("REQUEST_ACTIVE")){
+							
+							String login = json.getString("login");
+							
+							if(!mapLoginSocket.containsKey(login)){
+								synchronized (mapLoginSocket) {
+									mapLoginSocket.put(login, socketOrigem);
+								}
+							}
+							
+							jsonResponse.put("cmd", "RESPONSE_ACTIVE");
+							jsonResponse.put("data", true);
+							
+						}
+						
+						return jsonResponse.toString();
+					}
+					
+				}).start();
+				
+			}
+			
+		} catch (IOException e) {
+			e.printStackTrace();
+		}
+	}
+
+	private static void console(String str){
+		
+		SimpleDateFormat sdf = new SimpleDateFormat("dd/MM/yyyy HH:mm:ss");
+		
+		System.out.println("DEBBUG: " + sdf.format(new Date())+ ": " + str);
+	}
+	
+}
